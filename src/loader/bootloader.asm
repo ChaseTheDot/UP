@@ -1,4 +1,5 @@
 bits 64
+default rel
 
 
 ;======================================================================================
@@ -14,7 +15,12 @@ bits 64
 ; PE Format:
 ; https://blog.deephacking.tech/en/posts/anatomy-of-the-portable-executable-format/
 
+; UEFI Specification:
+; https://uefi.org/sites/default/files/resources/UEFI_Spec_2_10_Aug29.pdf
 
+; x64 Calling Convention    
+; https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170
+;======================================================================================
 
 
 ;======================================================================================
@@ -27,7 +33,7 @@ bits 64
 ; COFF/FILE Header
 ;--------------------------------------------------------------------------------------
 %define MachineType                     0x8664
-%define NumberOfSections                2
+%define NumberOfSections                3
 %define TimeDateStamp                   1790917236
 %define PointerToSymbolTable            0
 %define NumberOfSymbols                 0
@@ -42,7 +48,7 @@ bits 64
 %define MinorLinkerVersion              0
 %define SizeOfCode                      code_section_end - code_section_start
 %define SizeOfInitializedData           data_section_end - data_section_start
-%define SizeOfUninitializedData         0
+%define SizeOfUninitializedData         bss_section_end - bss_section_start
 %define RelativeAddressOfEntryPoint     code_section_start - image_start 
 %define RelativeBaseOfCode              code_section_start - image_start  
 %define ImageBaseAddress                0x00040000
@@ -90,18 +96,38 @@ bits 64
 %define DataNumberOfLinenumbers         0
 %define DataCharacteristics             0xC0000040   
 
-
+%define bssVirtualSize                  bss_section_end - bss_section_start
+%define bssVirtualAddress               bss_section_start - image_start
+%define bssSizeOfRawData                0
+%define bssPointerToRawData             0
+%define bssPointerToRelocations         0
+%define bssPointerToLinenumbers         0
+%define bssNumberOfRelocations          0
+%define bssNumberOfLinenumbers          0
+%define bssCharacteristics              0xC0000080
+;======================================================================================
 
 
 ;======================================================================================
-; PE IMAGE
+; BOOTLOADER CONSTANTS
 ;======================================================================================
-image_start:
+;--------------------------------------------------------------------------------------
+; GOP Preferred Framebuffer Information
+;--------------------------------------------------------------------------------------
+%define PreferredHorizontalResolution   2560
+%define PreferredVerticalResolution     1440
+%define PreferredPixelFormat            1
+;======================================================================================
 
 
+;======================================================================================
+; PE HEADERS
+;======================================================================================
 ;--------------------------------------------------------------------------------------
 ; DOS Header
 ;--------------------------------------------------------------------------------------
+image_start:
+
 headers_start:
 
 dw DOSSignature
@@ -191,27 +217,190 @@ dw DataNumberOfRelocations
 dw DataNumberOfLinenumbers
 dd DataCharacteristics                  ; contains initialized data + writable + readable
 
+db ".bss", 0, 0, 0, 0
+dd bssVirtualSize
+dd bssVirtualAddress
+dd bssSizeOfRawData                     ; no raw data stored on disk
+dd bssPointerToRawData
+dd bssPointerToRelocations
+dd bssPointerToLinenumbers
+dw bssNumberOfRelocations
+dw bssNumberOfLinenumbers
+dd bssCharacteristics                   ; contains uninitialized data + writable + readable
+
 times 512 - ($ - image_start) db 0      ; pad headers to FileAlignment
 headers_end:
+;======================================================================================
 
 
-
-
+;======================================================================================
+; PE SECTIONS
+;======================================================================================
 ;--------------------------------------------------------------------------------------
 ; .text Section
 ;--------------------------------------------------------------------------------------
+section .text
 code_section_start:
-    jmp $
-    times 512 - ($ - code_section_start) db 0   ; pad code section to FileAlignment
+
+    ; rax, rcx, rdx, r8, r9, r10 and r11 are used for passing arguments and return values
+    ; rbx is specifically used for pointer dereferencing
+    ; r12, R13 and r14 are used for general things
+
+    mov [rel ImageHandle], rcx
+    mov [rel SystemTable], rdx
+
+    ; 4 byte padding right before ConsoleInHandle pointer on x64
+    ; UEFI spec does not mention this padding for some reason
+    ; So keep in mind, BootServices pointer is at offset 96 and NOT 92
+    mov rbx, [rdx + 96]
+    mov [rel BootServices], rbx
+
+    mov r12, [rel BootServices]
+    mov rbx, [r12 + 320]
+    mov [rel LocateProtocolPtr], rbx
+
+    lea rcx, [rel efi_graphics_output_protocol_guid]
+    xor edx, edx                                                    ; second argument is NULL
+    lea r8, [rel GraphicsOutputProtocolPtr]
+
+    ; 32 bytes of shadow space + 8 bytes for the return address
+    ; stack must be 16 byte aligned
+    sub rsp, 40                                         
+    mov rax, [rel LocateProtocolPtr]
+    call rax
+    add rsp, 40
+
+    test rax, rax                                                   ; EFI_SUCCESS = 0
+    jnz gop_not_found
+
+    mov rbx, [rel GraphicsOutputProtocolPtr]
+    mov [rel GraphicsOutputProtocol], rbx
+
+    mov rbx, [rbx + 24]
+    mov [rel GraphicsOutputProtocolModePtr], rbx
+
+    mov [GraphicsOutputProtocolMode], rbx
+
+    mov ebx, [rbx + 0]
+    mov [rel GraphicsOutputProtocolMaxMode], ebx
+
+    mov rbx, [rel GraphicsOutputProtocol]
+    mov rbx, [rbx + 0]
+    mov [rel QueryModePtr], rbx
+
+    xor r12d, r12d                                                  ; mode number = 0
+    mov r13d, [rel GraphicsOutputProtocolMaxMode]
+    find_mode:
+        cmp r12d, r13d
+        jge no_matching_mode
+
+        mov rcx, [rel GraphicsOutputProtocolPtr]
+        mov edx, r12d
+        lea r8, [rel GraphicsOutputProtocolInformationSizePtr]
+        lea r9, [rel GraphicsOutputProtocolInformationPtr]
+
+        sub rsp, 40
+        mov rax, [rel QueryModePtr]
+        call rax
+        add rsp, 40
+
+        test rax, rax                                               ; EFI_SUCCESS = 0
+        jnz next_mode
+
+        mov rbx, [rel GraphicsOutputProtocolInformationPtr]
+        mov [rel GraphicsOutputProtocolInformation], rbx
+
+        mov rbx, [rel GraphicsOutputProtocolInformation]
+        mov ebx, [rbx + 4]
+        mov [rel HorizontalResolution], ebx
+        mov r14d, PreferredHorizontalResolution
+        cmp r14d, [rel HorizontalResolution]
+        jne next_mode
+
+        mov rbx, [rel GraphicsOutputProtocolInformation]
+        mov ebx, [rbx + 8]
+        mov [rel VerticalResolution], ebx
+        mov r14d, PreferredVerticalResolution
+        cmp r14d, [rel VerticalResolution]
+        jne next_mode
+
+        mov ebx, [rel GraphicsOutputProtocolInformation]
+        mov ebx, [ebx + 12]
+        mov [rel PixelFormat], ebx
+        mov r14d, PreferredPixelFormat
+        cmp r14d, [rel PixelFormat]
+        jne next_mode
+
+        mov rbx, [GraphicsOutputProtocol]
+        mov rbx, [rbx + 8]
+        mov [rel SetModePtr], rbx
+
+        mov rcx, [rel GraphicsOutputProtocolPtr]
+        mov edx, r12d                                               ; mode number matching the preferred info
+
+        sub rsp, 40
+        mov rax, [rel SetModePtr]
+        call rax
+        add rsp, 40
+
+        jmp $
+
+        next_mode:
+            inc r12d
+            jmp find_mode        
+
+
+    no_matching_mode: 
+        gop_not_found:
+                jmp $
+
+    times 512 - ($ - code_section_start) db 0                       ; pad code section to FileAlignment
+
 code_section_end:
 
 ;--------------------------------------------------------------------------------------
 ; .data Section
 ;--------------------------------------------------------------------------------------
+section .data
 data_section_start:
-    times 512 - ($ - data_section_start) db 0   ; pad data section to FileAlignment
+
+    efi_graphics_output_protocol_guid:
+        dd 0x9042A9DE
+        dw 0x23DC
+        dw 0x4A38
+        db 0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A
+
+    times 512 - ($ - data_section_start) db 0                       ; pad data section to FileAlignment
+
 data_section_end:
 
+;--------------------------------------------------------------------------------------
+; .bss Section
+;--------------------------------------------------------------------------------------
+section .bss
+bss_section_start:
+
+    ImageHandle                                     resq 1
+    SystemTable                                     resq 1
+    BootServices                                    resq 1
+    LocateProtocolPtr                               resq 1
+    GraphicsOutputProtocolPtr                       resq 1
+    GraphicsOutputProtocol                          resq 1
+    GraphicsOutputProtocolModePtr                   resq 1
+    GraphicsOutputProtocolMode                      resq 1
+    GraphicsOutputProtocolMaxMode                   resd 1
+    QueryModePtr                                    resq 1
+    GraphicsOutputProtocolInformationSizePtr        resq 1
+    GraphicsOutputProtocolInformationPtr            resq 1
+    GraphicsOutputProtocolInformation               resq 1
+    HorizontalResolution                            resd 1
+    VerticalResolution                              resd 1
+    PixelFormat                                     resd 1
+    SetModePtr                                      resq 1
+
+    resb 512 - ($ - bss_section_start)                              ; pad image size in memory to multiple of SectionAlignment
+
+bss_section_end:                                                   
 
 image_end:
-
+;======================================================================================
