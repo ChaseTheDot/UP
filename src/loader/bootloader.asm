@@ -324,16 +324,19 @@ code_section_start:
         cmp r14d, [rel VerticalResolution]
         jne next_mode
 
-        mov ebx, [rel GraphicsOutputProtocolInformation]
-        mov ebx, [ebx + 12]
+        mov rbx, [rel GraphicsOutputProtocolInformation]
+        mov ebx, [rbx + 12]
         mov [rel PixelFormat], ebx
-        mov r14d, PreferredPixelFormat
+        mov r14d, PreferredPixelFormat                              ; BGRA
         cmp r14d, [rel PixelFormat]
         jne next_mode
 
         mov rbx, [GraphicsOutputProtocol]
         mov rbx, [rbx + 8]
         mov [rel SetModePtr], rbx
+
+        test rax, rax                                               ; EFI_SUCCESS = 0
+        jnz gop_not_found                                           
 
         mov rcx, [rel GraphicsOutputProtocolPtr]
         mov edx, r12d                                               ; mode number matching the preferred info
@@ -343,7 +346,159 @@ code_section_start:
         call rax
         add rsp, 40
 
+        mov rbx, [rel GraphicsOutputProtocolMode]
+        mov rbx, [rbx + 24]
+        mov [rel FramebufferBaseAddress], rbx
+
+        mov rbx, [rel GraphicsOutputProtocolInformation]
+        mov ebx, [rbx + 32]
+        mov [rel PixelsPerScanLine], ebx 
+
+        ; allocate memory for each page tables
+        mov rbx, [rel BootServices]
+        mov rax, [rbx + 40]                                     
+        mov [rel AllocatePages], rax
+
+        ; page map level 4 table
+        mov rcx, 0 
+        mov rdx, 2    
+        mov r8, 1   
+        lea r9, [rel PageMapLevel4Ptr]
+
+        sub rsp, 40
+        call rax
+        add rsp, 40
+
+        test rax, rax
+        jnz handle_error
+
+        ; page directory pointer table
+        mov rcx, 0 
+        mov rdx, 2    
+        mov r8, 1  
+        lea r9, [rel PageDirectoryPointerTablePtr]
+
+        sub rsp, 40
+        mov rax, [rel AllocatePages]
+        call rax
+        add rsp, 40
+
+        test rax, rax
+        jnz handle_error
+
+        ; page directory table
+        mov rcx, 0 
+        mov rdx, 2    
+        mov r8, 32   
+        lea r9, [rel PageDirectoryTablePtr]
+
+        sub rsp, 40
+        mov rax, [AllocatePages]
+        call rax
+        add rsp, 40
+
+        test rax, rax
+        jnz handle_error
+
+        ; zero out all allocated memory
+        ; this is done because the allocated memory contains leftover unpredictable data 
+        ; and if one of those data has bit 0 (present bit) set
+        ; the CPU will take it as valid entry, which could cause a fault upon access
+        cld                                                         ; set the direction flag to one - just in case
+        mov rdi, [rel PageMapLevel4Ptr]
+        xor rax, rax
+        mov rcx, 512                                          
+        rep stosq
+
+        mov rdi, [rel PageDirectoryPointerTablePtr]
+        xor rax, rax
+        mov rcx, 512            
+        rep stosq
+
+        mov rdi, [rel PageDirectoryTablePtr]
+        xor rax, rax
+        mov rcx, 16384                                              ; Page table directory of all PDPT = 32 * 512                   
+        rep stosq
+
+        ; link page tables
+        ; PML4[0] = &PDPT + flags
+        mov rbx, [rel PageDirectoryPointerTablePtr]
+        xor rbx, 0x03                                               ; present + read/write          
+        mov rax, [rel PageMapLevel4Ptr]                    
+        mov [rax], rbx
+
+        ; PDPT[0] = &PDT + flags
+        ; PDPT[1] =  (&PDT + 1GiB) + flags
+        ; so on, so forth
+        mov rbx, [rel PageDirectoryPointerTablePtr]
+        mov rax, [rel PageDirectoryTablePtr]
+        xor rcx, rcx
+    link_pdpt_pdt_loop:
+        or rax, 0x03
+        mov [rbx + rcx * 8], rax
+
+        add rax, 0x1000                                             ; 4KiB
+        inc rcx
+        cmp rcx, 32
+        jl link_pdpt_pdt_loop
+
+        ; PD[1][1] = 0x00000000 + 0x83
+        ; PD[1][2] = (0x00000000 + 2MiB) + 0x83
+        ; ................
+        ; PD[2][1] = (0x00000000 + 1GiB) + 0x83
+        mov rax, 0x00000000
+        mov rbx, [rel PageDirectoryTablePtr]                                           
+        xor rcx, rcx
+
+    map_huge_pages_loop:
+        or rax, 0x83                                                ; present + read/write + page size
+        mov [rbx + rcx * 8], rax
+        
+        add rax, 0x200000   
+        inc rcx                                     
+        cmp rcx, 16384                                              ; 32 * 512
+        jl map_huge_pages_loop
+
+        mov rbx, [rel BootServices]
+        mov rax, [rbx + 56]
+        mov [rel GetMemoryMap], rax
+
+        lea rcx, [rel MemoryMapSize]
+        lea rdx, [rel MemoryMapDestination]
+        lea r8,  [rel MapKey]
+        lea r9,  [rel DescriptorSize]
+        lea rbx, [rel DescriptorVersion]
+        sub rsp, 40
+        mov [rsp + 32], rbx
+        call rax
+        add rsp, 40
+
+        test rax, rax   
+        jnz handle_error
+
+        mov rbx, [rel BootServices]
+        mov rax, [rbx + 232]
+        mov [rel ExitBootServices], rax
+
+        mov rcx, [rel ImageHandle]
+        mov rdx, [rel MapKey]
+
+        sub rsp, 40
+        call rax
+        add rsp, 40
+
+        test rax, rax
+        jnz handle_error
+
+        mov r14, rax
+        mov r15, rax
+
+        ; replaces UEFI paging with the new one
+        mov rax, [rel PageMapLevel4Ptr]
+        mov cr3, rax
+
         jmp $
+        
 
         next_mode:
             inc r12d
@@ -352,9 +507,10 @@ code_section_start:
 
     no_matching_mode: 
         gop_not_found:
+            handle_error:
                 jmp $
 
-    times 512 - ($ - code_section_start) db 0                       ; pad code section to FileAlignment
+    times 1024 - ($ - code_section_start) db 0                       ; pad code section to FileAlignment
 
 code_section_end:
 
@@ -369,6 +525,7 @@ data_section_start:
         dw 0x23DC
         dw 0x4A38
         db 0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A
+    MemoryMapSize dq 16384
 
     times 512 - ($ - data_section_start) db 0                       ; pad data section to FileAlignment
 
@@ -397,6 +554,19 @@ bss_section_start:
     VerticalResolution                              resd 1
     PixelFormat                                     resd 1
     SetModePtr                                      resq 1
+    FramebufferBaseAddress                          resq 1
+    PixelsPerScanLine                               resd 1
+    AllocatePages                                   resq 1
+    PageMapLevel4Ptr                                resq 1
+    PageDirectoryPointerTablePtr                    resq 1
+    PageDirectoryTablePtr                           resq 1
+    GetMemoryMap                                    resq 1
+    MemoryMapDestination                            resq 16384
+    MapKey                                          resq 1
+    DescriptorSize                                  resq 1
+    DescriptorVersion                               resq 1
+    ExitBootServices                                resq 1
+
 
     resb 512 - ($ - bss_section_start)                              ; pad image size in memory to multiple of SectionAlignment
 
