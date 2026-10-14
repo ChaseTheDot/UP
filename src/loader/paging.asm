@@ -29,11 +29,10 @@ setup_paging:
     mov rcx, AllocateAnyPages 
     mov rdx, EfiLoaderData
     mov r8, PML4PageCount   
-    lea r9, [rel PageMapLevel4Ptr]
+    lea r9, [PageMapLevel4]
 
     sub rsp, 40
-    mov rax, [rel AllocatePages]
-    call rax
+    call [AllocatePages]
     add rsp, 40
 
     test rax, rax
@@ -43,11 +42,10 @@ setup_paging:
     mov rcx, AllocateAnyPages 
     mov rdx, EfiLoaderData    
     mov r8, PDPTPageCount  
-    lea r9, [rel PageDirectoryPointerTablePtr]
+    lea r9, [PageDirectoryPointerTable]
 
     sub rsp, 40
-    mov rax, [rel AllocatePages]
-    call rax
+    call [AllocatePages]
     add rsp, 40
 
     test rax, rax
@@ -57,11 +55,10 @@ setup_paging:
     mov rcx, AllocateAnyPages 
     mov rdx, EfiLoaderData
     mov r8, PDTPageCount 
-    lea r9, [rel PageDirectoryTablePtr]
+    lea r9, [PageDirectoryTable]
 
     sub rsp, 40
-    mov rax, [AllocatePages]
-    call rax
+    call [AllocatePages]
     add rsp, 40
 
     test rax, rax
@@ -73,17 +70,17 @@ setup_paging:
     ; the allocated memory may containt leftover data 
     ; and if one of those data has bit 0 (present bit) set, the CPU will take it as valid entry
     ; which could cause it to access an invalid page or page table
-    mov rdi, [rel PageMapLevel4Ptr]
+    mov rdi, [PageMapLevel4]
     xor rax, rax
     mov rcx, 512                                          
     rep stosq
 
-    mov rdi, [rel PageDirectoryPointerTablePtr]
+    mov rdi, [PageDirectoryPointerTable]
     xor rax, rax
     mov rcx, 512            
     rep stosq
 
-    mov rdi, [rel PageDirectoryTablePtr]
+    mov rdi, [PageDirectoryTable]
     xor rax, rax
     mov rcx, PDTEntryCount                              ; page table directory of all PDPT = 32 * 512                   
     rep stosq
@@ -91,78 +88,116 @@ setup_paging:
     ;--------------------------------------------------------------------------------------------
     ; Link Page Table Hierarchy
     ;--------------------------------------------------------------------------------------------
-    ; PML4[0] = &PDPT + flags
-    mov rbx, [rel PageDirectoryPointerTablePtr]
-    or rbx, PageTableFlags                              ; present + read/write          
-    mov rax, [rel PageMapLevel4Ptr]                    
-    mov [rax], rbx
+    ; PML4 Table[0] = &PDPT + flags
+    mov r12, [PageDirectoryPointerTable]
+    or r12, PageTableFlags                              ; present + read/write          
+    mov r13, [PageMapLevel4]                    
+    mov [r13], r12
 
-    ; PDPTEntry[0] = &PDT + flags
-    ; PDPTEntry[1] =  (&PDT + 1GiB) + flags
+    ; PDP Table[0] Entry[0] = &PDT + flags
+    ; PDP Table[0] Entry[1] =  (&PDT + 1GiB) + flags
     ; and so on
-    mov rbx, [rel PageDirectoryPointerTablePtr]
-    mov rax, [rel PageDirectoryTablePtr]
-    xor rcx, rcx
+    mov r12, [PageDirectoryTable]
+    mov r13, [PageDirectoryPointerTable]
+    xor rbx, rbx
     link_pdpt_pdt_loop:
-        or rax, PageTableFlags                          ; present + read/write 
-        mov [rbx + rcx * 8], rax
+        mov r14, r12                                    ; saves it from corrupting
+        or r14, PageTableFlags                          ; present + read/write 
+        mov [r13 + (rbx * 8)], r14
 
-        add rax, PageTableSize                          ; 4KiB
-        inc rcx
-        cmp rcx, PDPTEntryCount
+        add r12, PageTableSize                          ; 4KiB
+        inc rbx
+        cmp rbx, PDPTEntryCount
         jl link_pdpt_pdt_loop
 
-    ;--------------------------------------------------------------------------------------------
-    ; Map Physical Memory
-    ;--------------------------------------------------------------------------------------------
-    ; PDEntry[0] = 0x00000000 + flags
-    ; PDEntry[1] = 0x00200000 + flags
+    ; PD Table[0] Entry[0] = 0x00000000 + flags
+    ; PD Table[0] Entry[1] = 0x00200000 + flags
     ; and so on
-    mov rax, 0x00000000
-    mov rbx, [rel PageDirectoryTablePtr]                    
-    xor rcx, rcx
+    mov r12, 0x00000000
+    mov r13, [PageDirectoryTable]                    
+    xor rbx, rbx
 
     map_2mib_memory_loop:
-        or rax, LargePageFlags                          ; present + read/write + page size
-        mov [rbx + rcx * 8], rax
+        mov r14, r12
+        or r14, LargePageFlags                          ; present + read/write + page size
+        mov [r13 + (rbx * 8)], r14
 
-        add rax, LargePageSize   
-        inc rcx                                     
-        cmp rcx, PDTEntryCount             
+        add r12, LargePageSize   
+        inc rbx                                     
+        cmp rbx, PDTEntryCount             
         jl map_2mib_memory_loop
 
     ;--------------------------------------------------------------------------------------------
-    ; Get UEFI Memory Map Key
-    ;--------------------------------------------------------------------------------------------
-    mov rbx, [rel BootServices]
-    mov rax, [rbx + 56]
-    mov [rel GetMemoryMap], rax
+    ; Link Page Table Hierarchy For Higher Half Kernel
+    ;--------------------------------------------------------------------------------------------    
+    ; PML4 Table[511] = &PDPT + flags    
+    mov r12, [PageDirectoryPointerTable]
+    or r12, PageTableFlags
+    mov r13, [PageMapLevel4]
+    mov [r13 + 4088], r12                               
 
-    lea rcx, [rel MemoryMapSize]
-    lea rdx, [rel MemoryMapDestination]
-    lea r8,  [rel MapKey]
-    lea r9,  [rel DescriptorSize]
-    lea rbx, [rel DescriptorVersion]
+    ; PDP Table[480] Entry[0] = &PDT + flags
+    ; PDP Table[480] Entry[1] =  (&PDT + 4KiB) + flags
+    ; and so on
+    mov r12, [PageDirectoryTable]    
+    mov r13, [PageDirectoryPointerTable]
+    add r13, 3840                                       ; PDP Table 480
+    xor rbx, rbx
+    link_higher_pdpt_pdt_loop:
+        mov r14, r12
+        or r14, PageTableFlags                          ; present + read/write 
+        mov [r13 + (rbx * 8)], r14
+
+        add r12, PageTableSize                          ; 4KiB
+        inc rbx
+        cmp rbx, PDPTEntryCount
+        jl link_higher_pdpt_pdt_loop
+
+    ; PD Table[0] Entry[0] = 0x00000000 + flags
+    ; PD Table[0] Entry[1] = 0x00200000 + flags
+    mov r12, 0x00000000
+    mov r13, [PageDirectoryTable]                    
+    xor rbx, rbx
+
+    map_higher_2mib_memory_loop:
+        mov r14, r12
+        or r14, LargePageFlags                          ; present + read/write + page size
+        mov [r13 + (rbx * 8)], r14
+
+        add r12, LargePageSize   
+        inc rbx                                     
+        cmp rbx, PDTEntryCount             
+        jl map_higher_2mib_memory_loop
+
+    ;--------------------------------------------------------------------------------------------
+    ; Get UEFI Memory Map Key and Exit UEFI Environment
+    ;--------------------------------------------------------------------------------------------
+    mov r12, [BootServices]
+    mov rax, [r12 + 56]
+    mov [GetMemoryMap], rax
+
+    lea rcx, [MemoryMapSize]
+    lea rdx, [MemoryMapDestination]
+    lea r8,  [MapKey]
+    lea r9,  [DescriptorSize]
+    lea r12, [DescriptorVersion]
     sub rsp, 40
-    mov [rsp + 32], rbx
-    call rax
+    mov [rsp + 32], r12                                 ; 5th argument
+    call [GetMemoryMap]
     add rsp, 40
 
     test rax, rax   
     jnz handle_error
     
-    ;--------------------------------------------------------------------------------------------
-    ; Exit UEFI Environment
-    ;--------------------------------------------------------------------------------------------
-    mov rbx, [rel BootServices]
-    mov rax, [rbx + 232]
-    mov [rel ExitBootServices], rax
+    mov r12, [BootServices]
+    mov rax, [r12 + 232]
+    mov [ExitBootServices], rax
 
-    mov rcx, [rel ImageHandle]
-    mov rdx, [rel MapKey]
+    mov rcx, [ImageHandle]
+    mov rdx, [MapKey]
 
     sub rsp, 40
-    call rax
+    call [ExitBootServices]
     add rsp, 40
 
     test rax, rax
@@ -172,7 +207,7 @@ setup_paging:
     ; Load The New Page Tables
     ;--------------------------------------------------------------------------------------------
     ; replace UEFI's page tables with ours
-    mov rax, [rel PageMapLevel4Ptr]
-    mov cr3, rax
+    mov r12, [PageMapLevel4]
+    mov cr3, r12
 
     ret
