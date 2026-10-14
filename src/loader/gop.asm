@@ -8,15 +8,14 @@ setup_gop:
     ;----------------------------------------------------------------------------------------------------
     ; Locate Graphics Output Protocol
     ;----------------------------------------------------------------------------------------------------
-    lea rcx, [rel efi_graphics_output_protocol_guid]
+    lea rcx, [efi_graphics_output_protocol_guid]
     xor edx, edx                                                    ; second argument is NULL
-    lea r8, [rel GraphicsOutputProtocolPtr]
+    lea r8, [GraphicsOutputProtocol]
 
     ; 32 bytes of shadow space + 8 bytes for the return address
     ; stack must be 16 byte aligned
     sub rsp, 40                                         
-    mov rax, [rel LocateProtocolPtr]
-    call rax
+    call [LocateProtocol]
     add rsp, 40
 
     test rax, rax                                                   ; EFI_SUCCESS = 0
@@ -25,100 +24,96 @@ setup_gop:
     ;----------------------------------------------------------------------------------------------------
     ; Get GOP MaxMode
     ;----------------------------------------------------------------------------------------------------
-    mov rbx, [rel GraphicsOutputProtocolPtr]
-    mov [rel GraphicsOutputProtocol], rbx
+    mov r12, [GraphicsOutputProtocol]
+    mov r13, [r12 + 24]
+    mov [GraphicsOutputProtocolMode], r13
 
-    mov rbx, [rbx + 24]
-    mov [rel GraphicsOutputProtocolModePtr], rbx
-
-    mov [GraphicsOutputProtocolMode], rbx
-
-    mov ebx, [rbx + 0]
-    mov [rel GraphicsOutputProtocolMaxMode], ebx
+    mov r14d, [r13 + 0]
+    mov [GraphicsOutputProtocolMaxMode], r14d
 
     ;----------------------------------------------------------------------------------------------------
     ; Find The Preferred GOP Mode
     ;----------------------------------------------------------------------------------------------------
-    mov rbx, [rel GraphicsOutputProtocol]
-    mov rbx, [rbx + 0]
-    mov [rel QueryModePtr], rbx
+    mov r12, [GraphicsOutputProtocol]
+    mov rax, [r12 + 0]
+    mov [QueryMode], rax
 
-    xor r12d, r12d                                                  ; mode number = 0
-    mov r13d, [rel GraphicsOutputProtocolMaxMode]
+    xor ebx, ebx                                                    ; mode number = 0
+    mov r12d, [GraphicsOutputProtocolMaxMode]
     find_mode:
-        cmp r12d, r13d
+        cmp ebx, r12d
         jge no_matching_mode
 
-        mov rcx, [rel GraphicsOutputProtocolPtr]
-        mov edx, r12d
-        lea r8, [rel GraphicsOutputProtocolInformationSizePtr]
-        lea r9, [rel GraphicsOutputProtocolInformationPtr]
+        mov rcx, [GraphicsOutputProtocol]
+        mov edx, ebx
+        lea r8, [GraphicsOutputProtocolInformationSize]
+        lea r9, [GraphicsOutputProtocolInformation]
 
         sub rsp, 40
-        mov rax, [rel QueryModePtr]
-        call rax
+        call [QueryMode]
         add rsp, 40
 
         test rax, rax                                               ; EFI_SUCCESS = 0
         jz check_info
 
         next_mode:
-            inc r12d
+            inc ebx
             jmp find_mode  
 
         check_info:
-            mov rbx, [rel GraphicsOutputProtocolInformationPtr]
-            mov [rel GraphicsOutputProtocolInformation], rbx
-
-            mov rbx, [rel GraphicsOutputProtocolInformation]
-            mov ebx, [rbx + 4]
-            mov [rel HorizontalResolution], ebx
-            mov r14d, PreferredHorizontalResolution
-            cmp r14d, [rel HorizontalResolution]
+            mov r13, [GraphicsOutputProtocolInformation]
+            mov r14d, [r13 + 4]                                     ; horizontal resolution
+            cmp r14d, PreferredHorizontalResolution                                       
             jne next_mode
 
-            mov rbx, [rel GraphicsOutputProtocolInformation]
-            mov ebx, [rbx + 8]
-            mov [rel VerticalResolution], ebx
-            mov r14d, PreferredVerticalResolution
-            cmp r14d, [rel VerticalResolution]
+            mov r13, [GraphicsOutputProtocolInformation]
+            mov r14d, [r13 + 8]                                     ; vertical resolution
+            cmp r14d, PreferredVerticalResolution
             jne next_mode
 
-            mov rbx, [rel GraphicsOutputProtocolInformation]
-            mov ebx, [rbx + 12]
-            mov [rel PixelFormat], ebx
-            mov r14d, PreferredPixelFormat                              ; BGRA
-            cmp r14d, [rel PixelFormat]
+            mov r13, [GraphicsOutputProtocolInformation]
+            mov r14d, [r13 + 12]                                    ; pixel format
+            cmp r14d, PreferredPixelFormat                          ; BGRA
             jne next_mode
 
             ;----------------------------------------------------------------------------------------------------
             ; Set The Preferred GOP Mode
             ;----------------------------------------------------------------------------------------------------
-            mov rbx, [GraphicsOutputProtocol]
-            mov rbx, [rbx + 8]
-            mov [rel SetModePtr], rbx
+            mov r12, [GraphicsOutputProtocol]
+            mov rax, [r12 + 8]
+            mov [SetMode], rax
 
-            mov rcx, [rel GraphicsOutputProtocolPtr]
-            mov edx, r12d                                               ; mode number matching the preferred info
+            mov rcx, [GraphicsOutputProtocol]
+            mov edx, ebx                                            ; mode number matching the preferred info
 
             sub rsp, 40
-            mov rax, [rel SetModePtr]
-            call rax
+            call [SetMode]
             add rsp, 40
 
-            test rax, rax                                               ; EFI_SUCCESS = 0
+            test rax, rax                                           ; EFI_SUCCESS = 0
             jnz gop_not_found                                           
 
             ;----------------------------------------------------------------------------------------------------
             ; Save Framebuffer Info
             ;----------------------------------------------------------------------------------------------------
-            mov rbx, [rel GraphicsOutputProtocolMode]
-            mov rbx, [rbx + 24]
-            mov [rel FramebufferBaseAddress], rbx
+            mov r12, [GraphicsOutputProtocolMode]
+            mov r13, [r12 + 24]
+            mov [FramebufferBaseAddress], r13
 
-            mov rbx, [rel GraphicsOutputProtocolInformation]
-            mov ebx, [rbx + 32]
-            mov [rel PixelsPerScanLine], ebx 
+            mov r12, [GraphicsOutputProtocolInformation]
+            mov r13d, [r12 + 4]
+            mov [HorizontalResolution], r13d
+
+            mov r12, [GraphicsOutputProtocolInformation]
+            mov r13d, [r12 + 8]
+            mov [VerticalResolution], r13d
+
+            mov r12, [GraphicsOutputProtocolInformation]
+            mov r13d, [r12 + 12]
+            mov [PixelFormat], r13d
+
+            mov r13d, [r12 + 32]
+            mov [PixelsPerScanLine], r13d 
 
             ret
 
