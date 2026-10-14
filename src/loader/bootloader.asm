@@ -216,7 +216,7 @@ dw bssNumberOfRelocations
 dw bssNumberOfLinenumbers
 dd bssCharacteristics                   ; contains uninitialized data + writable + readable
 
-times 512 - ($ - image_start) db 0      ; pad headers to FileAlignment
+align 512                               ; pad headers to FileAlignment
 headers_end:
 ;======================================================================================
 
@@ -230,43 +230,51 @@ headers_end:
 section .text
 code_section_start:
 
-    ; rax, rcx, rdx, r8, r9, r10 and r11 are used for passing arguments and return values
-    ; rbx is specifically used for pointer dereferencing
-    ; r12, R13 and r14 are used for general things
+    ; rcx, rdx, r8, r9, r10 and r11 are used for passing arguments
+    ; rax is used for holding UEFI function pointers
+    ; rbx is specifically used for loop counter
+    ; r12, r13, r14 and r15 are used for general things
 
-    mov [rel ImageHandle], rcx
-    mov [rel SystemTable], rdx
+    mov [ImageHandle], rcx
+    mov [SystemTable], rdx
 
     ; 4 byte padding right before ConsoleInHandle pointer on x64
     ; UEFI spec does not mention this padding for some reason
     ; So keep in mind, BootServices pointer is at offset 96 and NOT 92
-    mov rbx, [rdx + 96]
-    mov [rel BootServices], rbx
+    mov r12, [rdx + 96]
+    mov [BootServices], r12
 
-    mov r12, [rel BootServices]
-    mov rbx, [r12 + 320]
-    mov [rel LocateProtocolPtr], rbx
+    mov rax, [r12 + 320]
+    mov [LocateProtocol], rax
 
-    mov rbx, [rel BootServices]
-    mov rax, [rbx + 40]                                     
-    mov [rel AllocatePages], rax
+    mov r12, [BootServices]
+    mov rax, [r12 + 40]                                     
+    mov [AllocatePages], rax
 
     call setup_gop
     call setup_paging
+    call setup_gdt
 
-    jmp $
+    no_matching_mode:
+        lea r12, no_matching_mode_msg
+        call debug_print
+        jmp $
+
+    gop_not_found:
+        lea r12, gop_not_found_msg
+        call debug_print
+    
+    handle_error:
+        lea r12, error_msg
+        call debug_print
+        jmp $
 
     %include "src/loader/gop.asm"
     %include "src/loader/paging.asm"
-          
+    %include "src/loader/debug.asm"
+    %include "src/loader/gdt.asm"
 
-
-    no_matching_mode: 
-        gop_not_found:
-            handle_error:
-                jmp $
-
-    times 1024 - ($ - code_section_start) db 0                       ; pad code section to FileAlignment
+    align 512                           ; pad code section to FileAlignment
 
 code_section_end:
 
@@ -275,7 +283,10 @@ code_section_end:
 ;--------------------------------------------------------------------------------------
 section .data
 data_section_start:
-
+    no_matching_mode_msg    db "Couldn't find a matching mode!", 10, 0
+    gop_not_found_msg       db "Couldn't locate Graphics Output Protocol!", 10, 0
+    error_msg               db "Error!", 10, 0
+    
     efi_graphics_output_protocol_guid:
         dd 0x9042A9DE
         dw 0x23DC
@@ -283,39 +294,53 @@ data_section_start:
         db 0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A
     MemoryMapSize dq 16384
 
-    times 512 - ($ - data_section_start) db 0                       ; pad data section to FileAlignment
+    ; reference: https://wiki.osdev.org/Global_Descriptor_Table
+    align 8
+    gdt_start:
+        null_segment:           dq 0x0000000000000000
+        kernel_code_segment:    dq 0x00209A0000000000
+        kernel_data_segment:    dq 0x0000920000000000
+        user_code_segment:      dq 0x0020FA0000000000
+        user_data_segment:      dq 0x0000F20000000000
+    gdt_end:
 
+    gdt_field:
+        gdt_limit           dw (gdt_end - gdt_start) - 1    ; memory offset of the last byte relative to the base of the GDT
+        gdt_base_address    dq 0                            ; initialize the base address zero since we're gonna fill it on runtime
+
+    kernel_bin_start:
+        incbin "build/kernel.bin"
+    kernel_bin_end:
+
+
+    align 512                                               ; pad data section to FileAlignment
 data_section_end:
 
-;--------------------------------------------------------------------------------------
+;------------------------------------------------------------------------------------
 ; .bss Section
 ;--------------------------------------------------------------------------------------
 section .bss
 bss_section_start:
-
     ImageHandle                                     resq 1
     SystemTable                                     resq 1
     BootServices                                    resq 1
-    LocateProtocolPtr                               resq 1
-    GraphicsOutputProtocolPtr                       resq 1
+    LocateProtocol                                  resq 1
     GraphicsOutputProtocol                          resq 1
-    GraphicsOutputProtocolModePtr                   resq 1
-    GraphicsOutputProtocolMode                      resq 1
+    GraphicsOutputProtocolMode                      resq 1 
     GraphicsOutputProtocolMaxMode                   resd 1
-    QueryModePtr                                    resq 1
-    GraphicsOutputProtocolInformationSizePtr        resq 1
-    GraphicsOutputProtocolInformationPtr            resq 1
+    QueryMode                                       resq 1  
+    GraphicsOutputProtocolInformationSize           resq 1
     GraphicsOutputProtocolInformation               resq 1
     HorizontalResolution                            resd 1
     VerticalResolution                              resd 1
     PixelFormat                                     resd 1
-    SetModePtr                                      resq 1
+    SetMode                                         resq 1
     FramebufferBaseAddress                          resq 1
     PixelsPerScanLine                               resd 1
     AllocatePages                                   resq 1
-    PageMapLevel4Ptr                                resq 1
-    PageDirectoryPointerTablePtr                    resq 1
-    PageDirectoryTablePtr                           resq 1
+    PageMapLevel4                                   resq 1
+    PageDirectoryPointerTable                       resq 1
+    PageDirectoryTable                              resq 1
     GetMemoryMap                                    resq 1
     MemoryMapDestination                            resq 16384
     MapKey                                          resq 1
@@ -323,8 +348,12 @@ bss_section_start:
     DescriptorVersion                               resq 1
     ExitBootServices                                resq 1
 
+    alignb 16
+    stack_bottom:
+        resb 16384
+    stack_top:
 
-    resb 512 - ($ - bss_section_start)                              ; pad image size in memory to multiple of SectionAlignment
+    alignb 512                                              ; pad image size in memory to multiple of SectionAlignment
 
 bss_section_end:                                                   
 
