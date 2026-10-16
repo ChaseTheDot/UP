@@ -66,10 +66,10 @@ default rel
 %define CheckSum                        0
 %define SubsystemType                   10
 %define DllCharacteristics              0
-%define SizeOfStackReserve              0x00010000
-%define SizeOfStackCommit               0x00000100
-%define SizeOfHeapReserve               0x00010000
-%define SizeOfHeapCommit                0x00010000
+%define SizeOfStackReserve              0x00000000
+%define SizeOfStackCommit               0x00000000
+%define SizeOfHeapReserve               0x00000000
+%define SizeOfHeapCommit                0x00000000
 %define LoaderFlags                     0
 %define NumberOfRvaAndSizes             16 
 
