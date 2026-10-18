@@ -256,16 +256,16 @@ code_section_start:
     call setup_gdt
 
     no_matching_mode:
-        lea r12, no_matching_mode_msg
+        lea r12, [no_matching_mode_msg]
         call debug_print
         jmp $
 
     gop_not_found:
-        lea r12, gop_not_found_msg
+        lea r12, [gop_not_found_msg]
         call debug_print
     
     handle_error:
-        lea r12, error_msg
+        lea r12, [error_msg]
         call debug_print
         jmp $
 
