@@ -3,7 +3,7 @@ ENTRY(kernel_start)
 
 SECTIONS
 {
-    . = 0xFFFFFFF800200000;     /*higher half kernel*/
+    . = 0xFFFFFF8000200000;     /*higher half kernel*/
 
     .text : {
         *(.text)

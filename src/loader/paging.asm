@@ -23,7 +23,7 @@
 
 setup_paging:
     ;--------------------------------------------------------------------------------------------
-    ; Allocate Memory For The Page Tables
+    ; Allocate Memory For The Userspace Page Tables
     ;--------------------------------------------------------------------------------------------
     ; allocate the PML4 table 
     mov rcx, AllocateAnyPages 
@@ -56,6 +56,35 @@ setup_paging:
     mov rdx, EfiLoaderData
     mov r8, PDTPageCount 
     lea r9, [PageDirectoryTable]
+
+    sub rsp, 40
+    call [AllocatePages]
+    add rsp, 40
+
+    test rax, rax
+    jnz handle_error
+
+    ;--------------------------------------------------------------------------------------------
+    ; Allocate Memory For The Kernel Page Tables
+    ;--------------------------------------------------------------------------------------------
+    ; allocate the PDPT
+    mov rcx, AllocateAnyPages 
+    mov rdx, EfiLoaderData    
+    mov r8, PDPTPageCount  
+    lea r9, [PageDirectoryPointerTableHigher]
+
+    sub rsp, 40
+    call [AllocatePages]
+    add rsp, 40
+
+    test rax, rax
+    jnz handle_error
+
+    ; allocate the PD tables
+    mov rcx, AllocateAnyPages 
+    mov rdx, EfiLoaderData
+    mov r8, PDTPageCount 
+    lea r9, [PageDirectoryTableHigher]
 
     sub rsp, 40
     call [AllocatePages]
@@ -131,17 +160,16 @@ setup_paging:
     ; Link Page Table Hierarchy For Higher Half Kernel
     ;--------------------------------------------------------------------------------------------    
     ; PML4 Table[511] = &PDPT + flags    
-    mov r12, [PageDirectoryPointerTable]
+    mov r12, [PageDirectoryPointerTableHigher]
     or r12, PageTableFlags
     mov r13, [PageMapLevel4]
     mov [r13 + 4088], r12                               
 
-    ; PDP Table[480] Entry[0] = &PDT + flags
-    ; PDP Table[480] Entry[1] =  (&PDT + 4KiB) + flags
+    ; PDP Table[0] Entry[0] = &PDT + flags
+    ; PDP Table[0] Entry[1] = (&PDT + 4KiB) + flags
     ; and so on
-    mov r12, [PageDirectoryTable]    
-    mov r13, [PageDirectoryPointerTable]
-    add r13, 3840                                       ; PDP Table 480
+    mov r12, [PageDirectoryTableHigher]    
+    mov r13, [PageDirectoryPointerTableHigher]
     xor rbx, rbx
     link_higher_pdpt_pdt_loop:
         mov r14, r12
@@ -156,7 +184,7 @@ setup_paging:
     ; PD Table[0] Entry[0] = 0x00000000 + flags
     ; PD Table[0] Entry[1] = 0x00200000 + flags
     mov r12, 0x00000000
-    mov r13, [PageDirectoryTable]                    
+    mov r13, [PageDirectoryTableHigher]                    
     xor rbx, rbx
 
     map_higher_2mib_memory_loop:

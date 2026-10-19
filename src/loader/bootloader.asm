@@ -340,7 +340,9 @@ bss_section_start:
     AllocatePages                                   resq 1
     PageMapLevel4                                   resq 1
     PageDirectoryPointerTable                       resq 1
+    PageDirectoryPointerTableHigher                 resq 1
     PageDirectoryTable                              resq 1
+    PageDirectoryTableHigher                        resq 1
     GetMemoryMap                                    resq 1
     MemoryMapDestination                            resq 16384
     MapKey                                          resq 1

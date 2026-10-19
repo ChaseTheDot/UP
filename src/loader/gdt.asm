@@ -15,12 +15,12 @@ setup_gdt:
 
     ; Copy the embedded kernel to physical address 0x00100000
     lea rsi, [kernel_bin_start]
-    mov rdi, 0xFFFFFFF800200000
+    mov rdi, 0xFFFFFF8000200000
     mov rcx, (kernel_bin_end - kernel_bin_start)
     rep movsb
 
     push 8                                                          ; kernel code segment offset in GDT
-    mov r12, 0xFFFFFFF800200000                                     ; kernel entry point
+    mov r12, 0xFFFFFF8000200000                                     ; kernel entry point
     push r12                                                        
 
     retfq                                                           ; jump to kernel
